@@ -36,6 +36,23 @@
         for (var i = 0; i < messages.length; i++) {
           var item = document.createElement("div");
           item.innerText = messages[i];
+
+          var button1 = document.createElement("button");
+          button1.innerText = "Edit";
+
+          button1.addEventListener("click", function () {
+            console.log("Le diste click al btn 1");
+          });
+
+          var button2 = document.createElement("button");
+          button2.innerText = "Delete";
+          button2.addEventListener("click", function () {
+            console.log("Le diste click al btn 2");
+          });
+
+          item.appendChild(button1);
+          item.appendChild(button2);
+
           appendLog(item);
         }
       };

@@ -9,30 +9,30 @@ import (
 )
 
 func Chat(c *websocket.Conn) {
-    defer func() {
-			types.Unregister <- c
-			c.Close()
-		}()
+  defer func() {
+    types.Unregister <- c
+    c.Close()
+  }()
 
-		types.Register <- c
+  types.Register <- c
 
-		for {
-			messageType, message, err := c.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Println("read error:", err)
-				}
+  for {
+    messageType, message, err := c.ReadMessage()
+    if err != nil {
+      if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+        log.Println("read error:", err)
+      }
+      return 
+    }
 
-				return 
-			}
+    if messageType == websocket.TextMessage {
+      types.Broadcast <- string(message)
+    } else {
+      log.Println("websocket message received of type", messageType)
+    }
+  }
+}
 
-			if messageType == websocket.TextMessage {
-				types.Broadcast <- string(message)
-			} else {
-				log.Println("websocket message received of type", messageType)
-			}
-		}
-	}
 
 func HomePage(c *fiber.Ctx) error {
 	return c.Render("home", fiber.Map{})

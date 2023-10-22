@@ -6,6 +6,12 @@ import (
 	"github.com/gofiber/contrib/websocket"
 )
 
+type Message struct {
+    Text         string `json:"text"`
+    Title        string `json:"title"`
+    FullFilePath string `json:"fullFilePath"`
+}
+
 type Client struct {
   IsClosing bool
 	Mu        sync.Mutex
