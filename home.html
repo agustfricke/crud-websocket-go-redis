@@ -1,46 +1,67 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <title>Chat Example</title>
+    <title>Websocketme daddy</title>
     <script type="text/javascript">
       window.onload = function () {
         var conn;
         var msg = document.getElementById("msg");
-        var log = document.getElementById("log");
 
         function appendLog(item) {
-          var doScroll =
-            log.scrollTop > log.scrollHeight - log.clientHeight - 1;
-          log.appendChild(item);
-          if (doScroll) {
-            log.scrollTop = log.scrollHeight - log.clientHeight;
+          var keyValuePairs = item.split(" || ");
+          var data = {};
+          for (var i = 0; i < keyValuePairs.length; i++) {
+            var pair = keyValuePairs[i].split(":");
+            var key = pair[0].trim();
+            var value = pair[1].trim();
+            data[key] = value;
           }
-        }
 
-        function createMessageElement(id, content) {
-          var item = document.createElement("div");
-          item.innerHTML =
-            "<span>ID: " + id + ", Content: " + content + "</span>";
+          const card = document.createElement("div");
 
-          // Edit Button
-          var editButton = document.createElement("button");
-          editButton.innerText = "Edit";
-          editButton.onclick = function () {
-            // Implement your edit logic here
-            // You can use the 'id' and 'content' values to edit the message
-          };
-          item.appendChild(editButton);
+          card.innerHTML = `
+            <div id="innerHTML_${data.id}">
+      <h5>${data.id} - ${data.title}</h5>
+      <button id="delete_${data.id}">Delete</button>
+      <button id="edit_${data.id}">Edit</button>
+            </div>
+  `;
 
-          // Delete Button
-          var deleteButton = document.createElement("button");
-          deleteButton.innerText = "Delete";
-          deleteButton.onclick = function () {
-            // Implement your delete logic here
-            // You can use the 'id' to identify the message to delete
-          };
-          item.appendChild(deleteButton);
+          const container = document.getElementById("log");
+          container.appendChild(card);
 
-          return item;
+          const editButton = document.getElementById(`edit_${data.id}`);
+          editButton.addEventListener("click", function () {
+            const me = document.getElementById(`innerHTML_${data.id}`);
+
+            const currentTitle = data.title;
+
+            const inputField = document.createElement("input");
+            inputField.value = currentTitle;
+
+            const saveButton = document.createElement("button");
+            saveButton.innerText = "Guardar";
+
+            saveButton.addEventListener("click", () => {
+              let old = `id: ${data.id} || title: ${data.title} || action: delete`;
+              let newM = `id: ${data.id} || title: ${inputField.value} || action: normal`;
+              console.log("input", inputField.value, "data", data);
+              conn.send(old);
+              conn.send(newM);
+              me.removeChild(inputField);
+              me.removeChild(saveButton);
+            });
+
+            me.innerHTML = "";
+            me.appendChild(inputField);
+            me.appendChild(saveButton);
+          });
+
+          const deleteButton = document.getElementById(`delete_${data.id}`);
+          deleteButton.addEventListener("click", function () {
+            let format = `id: ${data.id} || title: ${data.title} || action: delete`;
+            conn.send(format);
+          });
         }
 
         document.getElementById("form").onsubmit = function () {
@@ -50,7 +71,15 @@
           if (!msg.value) {
             return false;
           }
-          conn.send(JSON.stringify({ id: "", content: msg.value }));
+          function generateRandomId() {
+            const timestamp = new Date().getTime();
+            const randomNum = Math.floor(Math.random() * 10000);
+            return `${timestamp}${randomNum}`;
+          }
+
+          const randomId = generateRandomId();
+
+          conn.send(`id: ${randomId} || title: ${msg.value} || action: normal`);
           msg.value = "";
           return false;
         };
@@ -63,11 +92,23 @@
             appendLog(item);
           };
           conn.onmessage = function (evt) {
-            var messages = evt.data.split("\n");
-            for (var i = 0; i < messages.length; i++) {
-              var message = JSON.parse(messages[i]);
-              var item = createMessageElement(message.id, message.content);
-              appendLog(item);
+            var message = evt.data;
+
+            if (message.startsWith("Deleted message: ")) {
+              var deletedMessage = message.substring(
+                "Deleted message: ".length
+              );
+
+              var match = message.match(/id: (\d+)/);
+              var id = match[1];
+              messageToDel = `innerHTML_${id}`;
+              messageToDelInTheDom = document.getElementById(`innerHTML_${id}`);
+              let otherId = messageToDelInTheDom.id;
+              if (messageToDel == otherId) {
+                messageToDelInTheDom.remove();
+              }
+            } else {
+              appendLog(message);
             }
           };
         } else {
@@ -79,10 +120,10 @@
     </script>
   </head>
   <body>
-    <div id="log"></div>
     <form id="form">
       <input type="text" id="msg" size="64" autofocus autocomplete="off" />
       <input type="submit" value="Send" />
     </form>
+    <div id="log"></div>
   </body>
 </html>

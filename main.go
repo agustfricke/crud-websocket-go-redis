@@ -1,151 +1,188 @@
 package main
 
 import (
-    "encoding/json"
-    "flag"
-    "log"
-    "sync"
+	"flag"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
 
-    "github.com/go-redis/redis/v8" // Importa el paquete Redis
-    "github.com/gofiber/contrib/websocket"
-    "github.com/gofiber/fiber/v2"
-    "github.com/google/uuid"
-    "context"
+	"github.com/go-redis/redis/v8"
+	"github.com/gofiber/contrib/websocket"
+	"github.com/gofiber/fiber/v2"
 )
 
 type client struct {
-    isClosing bool
-    mu        sync.Mutex
-}
-
-type Message struct {
-    ID      string `json:"id"`
-    Content string `json:"content"`
-    Action  string `json:"action"`
+  isClosing bool
+  mu        sync.Mutex
 }
 
 var clients = make(map[*websocket.Conn]*client)
 var register = make(chan *websocket.Conn)
-var broadcast = make(chan Message)
 var unregister = make(chan *websocket.Conn)
 
-// Crea un cliente Redis
-var redisClient = redis.NewClient(&redis.Options{
-    Addr:     "localhost:6379", // Reemplaza esto con la dirección de tu servidor Redis
-    Password: "",              // Sin contraseña por defecto
-    DB:       0,               // Usar el DB 0 por defecto
-})
+var broadcast = make(chan string)
+var deleteMessage = make(chan string)
+
+type messageStore struct {
+  sync.Mutex
+  client *redis.Client
+}
+
+var messageStorage *messageStore
+
+func initializeRedis() (*redis.Client, error) {
+  client := redis.NewClient(&redis.Options{
+    Addr: "localhost:6379", 
+    DB:   0,               
+  })
+  _, err := client.Ping(client.Context()).Result()
+  return client, err
+}
 
 func runHub() {
-    for {
-        select {
-        case connection := <-register:
-            clients[connection] = &client{}
-            log.Println("connection registered")
+  for {
+    select {
+    case connection := <-register:
+      clients[connection] = &client{}
+      log.Println("connection registered")
 
-        case message := <-broadcast:
-            message.ID = uuid.New().String()
-            messageJSON, err := json.Marshal(message)
-            if err != nil {
-                log.Println("JSON marshaling error:", err)
-                continue
-            }
-            log.Println("message received:", string(messageJSON))
-            for connection, c := range clients {
-                go func(connection *websocket.Conn, c *client) {
-                    c.mu.Lock()
-                    defer c.mu.Unlock()
-                    if c.isClosing {
-                        return
-                    }
-                    if err := connection.WriteMessage(websocket.TextMessage, messageJSON); err != nil {
-                        c.isClosing = true
-                        log.Println("write error:", err)
-
-                        connection.WriteMessage(websocket.CloseMessage, []byte{})
-                        connection.Close()
-                        unregister <- connection
-                    }
-                }(connection, c)
-            }
-
-            // Almacena el mensaje en Redis
-            go func(message Message) {
-                ctx := context.Background()
-                messageBytes, _ := json.Marshal(message)
-                err := redisClient.LPush(ctx, "chat_messages", string(messageBytes)).Err()
-                if err != nil {
-                    log.Println("Redis error:", err)
-                }
-            }(message)
-
-        case connection := <-unregister:
-            delete(clients, connection)
-            log.Println("connection unregistered")
+      messageStorage.Lock()
+      messages, err := messageStorage.client.LRange(messageStorage.client.Context(), "messages", 0, -1).Result()
+      if err == nil {
+        for _, message := range messages {
+          connection.WriteMessage(websocket.TextMessage, []byte(message))
         }
+      }
+      messageStorage.Unlock()
+
+    case message := <-broadcast:
+      log.Println("message received:", message)
+
+      messageStorage.Lock()
+      messageStorage.client.LPush(messageStorage.client.Context(), "messages", message)
+      messageStorage.Unlock()
+
+      for connection, c := range clients {
+        go func(connection *websocket.Conn, c *client) {
+          c.mu.Lock()
+          defer c.mu.Unlock()
+          if c.isClosing {
+            return
+          }
+          if err := connection.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
+            c.isClosing = true
+            log.Println("write error:", err)
+
+            connection.WriteMessage(websocket.CloseMessage, []byte{})
+            connection.Close()
+            unregister <- connection
+          }
+        }(connection, c)
+      }
+
+    case message := <-deleteMessage:
+      log.Println("message to delete:", message)
+
+      messageStorage.Lock()
+      if err := messageStorage.client.LRem(messageStorage.client.Context(), "messages", 0, message).Err(); err != nil {
+        log.Println("error deleting message:", err)
+      }
+      messageStorage.Unlock()
+
+      for connection, c := range clients {
+        go func(connection *websocket.Conn, c *client) {
+          c.mu.Lock()
+          defer c.mu.Unlock()
+          if c.isClosing {
+            return
+          }
+          if err := connection.WriteMessage(websocket.TextMessage, []byte("Deleted message: "+message)); err != nil {
+            c.isClosing = true
+            log.Println("error al eliminar write error:", err)
+
+            connection.WriteMessage(websocket.CloseMessage, []byte{})
+            connection.Close()
+            unregister <- connection
+          }
+        }(connection, c)
+      }
     }
+  }
 }
 
 func main() {
-    app := fiber.New()
+  app := fiber.New()
 
-    app.Static("/", "./home.html")
+  app.Static("/", "./home.html")
 
-    app.Use(func(c *fiber.Ctx) error {
-        if websocket.IsWebSocketUpgrade(c) {
-            return c.Next()
+  app.Use(func(c *fiber.Ctx) error {
+    if websocket.IsWebSocketUpgrade(c) {
+      return c.Next()
+    }
+    return c.SendStatus(fiber.StatusUpgradeRequired)
+  })
+
+  redisClient, err := initializeRedis()
+  if err != nil {
+    log.Fatal("Failed to connect to Redis:", err)
+  }
+  messageStorage = &messageStore{
+    client: redisClient,
+  }
+
+  go runHub()
+
+  app.Get("/ws", websocket.New(func(c *websocket.Conn) {
+    defer func() {
+      unregister <- c
+      c.Close()
+    }()
+
+    register <- c
+
+    for {
+      messageType, message, err := c.ReadMessage()
+      if err != nil {
+        if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+          log.Println("read error:", err)
         }
-        return c.SendStatus(fiber.StatusUpgradeRequired)
-    })
+        return
+      }
 
-    go runHub()
+      if messageType == websocket.TextMessage {
 
-    app.Get("/ws", websocket.New(func(c *websocket.Conn) {
-        defer func() {
-            unregister <- c
-            c.Close()
-        }()
+        messageStr := string(message)
+        log.Println("websocket message received:", messageStr)
 
-        register <- c
+        parts := strings.Split(messageStr, " || ")
+        data := make(map[string]string)
 
-        // Recupera los mensajes anteriores desde Redis y envíalos al cliente recién conectado
-        ctx := context.Background()
-        messages, err := redisClient.LRange(ctx, "chat_messages", 0, -1).Result()
-        if err != nil {
-            log.Println("Redis error:", err)
-        }
-        for _, msgStr := range messages {
-            var msg Message
-            if err := json.Unmarshal([]byte(msgStr), &msg); err != nil {
-                log.Println("JSON unmarshaling error:", err)
-                continue
-            }
-            c.WriteJSON(msg)
+        for _, part := range parts {
+          keyValue := strings.Split(part, ": ")
+          if len(keyValue) == 2 {
+            key := strings.TrimSpace(keyValue[0])
+            value := strings.TrimSpace(keyValue[1])
+            data[key] = value
+          }
         }
 
-        for {
-            messageType, message, err := c.ReadMessage()
-            if err != nil {
-                if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-                    log.Println("read error:", err)
-                }
-                return
-            }
+        id := data["id"]
+        title := data["title"]
+        action := data["action"]
 
-            if messageType == websocket.TextMessage {
-                var msg Message
-                if err := json.Unmarshal(message, &msg); err != nil {
-                    log.Println("JSON unmarshaling error:", err)
-                    continue
-                }
-                broadcast <- msg
-            } else {
-                log.Println("websocket message received of type", messageType)
-            }
+        if (action == "delete") {
+          messageToBeDeleted := fmt.Sprintf("id: %s || title: %s || action: normal", id, title)
+          deleteMessage <- messageToBeDeleted
+          fmt.Println("El mensaje se elimino")
+        } else {
+          broadcast <- messageStr
         }
-    }))
+      }
+    }
+  }))
 
-    addr := flag.String("addr", ":8080", "http service address")
-    flag.Parse()
-    log.Fatal(app.Listen(*addr))
+  addr := flag.String("addr", ":8080", "http service address")
+  flag.Parse()
+  log.Fatal(app.Listen(*addr))
 }
