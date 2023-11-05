@@ -85,7 +85,7 @@
         };
 
         if (window["WebSocket"]) {
-          conn = new WebSocket("ws://" + document.location.host + "/ws");
+          conn = new WebSocket("ws://" + document.location.host + "/ws?page=1");
           conn.onclose = function (evt) {
             var item = document.createElement("div");
             item.innerHTML = "<b>Connection closed.</b>";
@@ -95,10 +95,6 @@
             var message = evt.data;
 
             if (message.startsWith("Deleted message: ")) {
-              var deletedMessage = message.substring(
-                "Deleted message: ".length
-              );
-
               var match = message.match(/id: (\d+)/);
               var id = match[1];
               messageToDel = `innerHTML_${id}`;

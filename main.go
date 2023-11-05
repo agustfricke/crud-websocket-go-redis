@@ -47,14 +47,6 @@ func runHub() {
       clients[connection] = &client{}
       log.Println("connection registered")
 
-      messageStorage.Lock()
-      messages, err := messageStorage.client.LRange(messageStorage.client.Context(), "messages", 0, -1).Result()
-      if err == nil {
-        for _, message := range messages {
-          connection.WriteMessage(websocket.TextMessage, []byte(message))
-        }
-      }
-      messageStorage.Unlock()
 
     case message := <-broadcast:
       log.Println("message received:", message)
@@ -134,12 +126,23 @@ func main() {
   go runHub()
 
   app.Get("/ws", websocket.New(func(c *websocket.Conn) {
+    page := c.Query("page")
+    fmt.Println(page)
     defer func() {
       unregister <- c
       c.Close()
     }()
 
     register <- c
+
+      messageStorage.Lock()
+      messages, err := messageStorage.client.LRange(messageStorage.client.Context(), "messages", 0, -1).Result()
+      if err == nil {
+        for _, message := range messages {
+          c.WriteMessage(websocket.TextMessage, []byte(message))
+        }
+      }
+      messageStorage.Unlock()
 
     for {
       messageType, message, err := c.ReadMessage()
